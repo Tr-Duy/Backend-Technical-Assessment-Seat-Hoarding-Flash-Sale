@@ -74,7 +74,7 @@ Các ngưỡng này cấu hình trong `application.yml`.
 ### 1. Clone dự án
 
 ```powershell
-git clone <link-repo-cua-ban>
+git clone (https://github.com/Tr-Duy/Backend-Technical-Assessment-Seat-Hoarding-Flash-Sale)
 cd flash-sale-demo
 ```
 
