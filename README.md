@@ -11,12 +11,12 @@ Dự án giải quyết hai câu hỏi của đề:
 
 | Thành phần | Công nghệ |
 | --- | --- |
-| Ngôn ngữ / Framework | Java 17, Spring Boot 3.x, Maven |
+| Ngôn ngữ / Framework | Java 17, Spring Boot 3.3.5, Maven |
 | Trừ kho nguyên tử | Redis + Lua script |
-| Lưu trữ | MySQL, quản lý schema bằng Flyway |
+| Lưu trữ | MySQL 8, quản lý schema bằng Flyway |
 | Xử lý bất đồng bộ | Queue + Order Worker (queue trong bộ nhớ, thay được bằng Kafka/RabbitMQ qua interface `OrderQueue`) |
 | Chống bot | Challenge token ký HMAC-SHA256, rate limit, Redis SETNX |
-| Test | JUnit 5, MockMvc |
+| Test | JUnit 5, MockMvc, Awaitility |
 | Hạ tầng chạy thử | Docker Compose (Redis + MySQL) |
 
 ## Kiến trúc và luồng xử lý
@@ -35,7 +35,7 @@ Luồng mua hàng:
 
 1. Client lấy token ở `GET /api/flash-sale/challenge`, rồi gửi `POST /api/flash-sale/{sku}/buy` kèm token.
 2. `BotGuardInterceptor` kiểm tra token và rate limit. Request không hợp lệ bị loại trước khi chạm Redis.
-3. Nếu service đã biết hết hàng, trả `409` ngay, không gọi Redis.
+3. Nếu service đã biết hết hàng (cờ cục bộ), trả `409` ngay, không gọi Redis.
 4. Lua script chạy nguyên tử trên Redis: kiểm tra user đã mua chưa, kiểm tra `stock > 0`, trừ kho và ghi nhận người mua trong một bước.
 5. Thành công: tạo `orderId`, đẩy vào queue, trả `202 Accepted`.
 6. `OrderWorker` ghi database bất đồng bộ, trừ kho DB bằng câu lệnh có điều kiện `stock > 0` và tạo đơn `PENDING_PAYMENT`. Đây là chốt chặn cuối nếu Redis lệch dữ liệu.
@@ -45,22 +45,23 @@ Các lớp bảo vệ chống over-selling:
 
 | Lớp | Cơ chế |
 | --- | --- |
-| 1 | Redis Lua script nguyên tử, chống race condition |
-| 2 | DB conditional update `WHERE stock > 0` |
-| 3 | `UNIQUE (user_id, sku_id)`, mỗi người một sản phẩm và chống ghi trùng |
+| 1 | Cờ sold-out cục bộ trong bộ nhớ, không gọi Redis |
+| 2 | Redis Lua script nguyên tử, chống race condition |
+| 3 | DB conditional update `WHERE stock > 0` |
+| 4 | `UNIQUE (user_id, sku_id)`, mỗi người một sản phẩm và chống ghi trùng |
 
 Các lớp chống bot:
 
 | Kiểm tra | Kết quả khi vi phạm |
 | --- | --- |
-| Thiếu token | `403` |
-| Chữ ký sai hoặc sai user | `403` |
+| Thiếu token | `403 MISSING_CHALLENGE` |
+| Chữ ký sai hoặc sai user | `403 INVALID` |
 | Gửi nhanh hơn 200 ms sau khi cấp token | `403 TOO_FAST` |
 | Token quá 120 giây | `403 EXPIRED` |
 | Dùng lại token | `403 REPLAYED` |
-| Quá 5 request/giây theo user | `429` |
+| Quá 5 request/giây theo user | `429 RATE_LIMITED` |
 
-Các ngưỡng này cấu hình trong `application.yml`.
+Đây là một lớp bảo vệ ở tầng ứng dụng. Hệ thống thật cần thêm: WAF (Web Application Firewall), nhận diện TLS fingerprint (JA4), CAPTCHA ẩn, phòng chờ ảo (virtual waiting room), và giới hạn 1 sản phẩm mỗi người đã có sẵn ở lớp Redis (`bought:{sku}` set) và DB (`UNIQUE(user_id, sku_id)`).
 
 ## Yêu cầu cài đặt
 
@@ -74,7 +75,7 @@ Các ngưỡng này cấu hình trong `application.yml`.
 ### 1. Clone dự án
 
 ```powershell
-git clone (https://github.com/Tr-Duy/Backend-Technical-Assessment-Seat-Hoarding-Flash-Sale)
+git clone https://github.com/Tr-Duy/Backend-Technical-Assessment-Seat-Hoarding-Flash-Sale
 cd flash-sale-demo
 ```
 
@@ -89,10 +90,10 @@ Chờ đến khi cả hai container ở trạng thái `running` hoặc `healthy`
 
 ### 3. (Tùy chọn) Đặt biến môi trường
 
-Secret ký token lấy từ biến môi trường. Nếu không đặt, ứng dụng dùng giá trị mặc định dành cho demo (xem `application.yml`).
-
 ```powershell
 $env:CHALLENGE_SECRET = "doi-thanh-chuoi-bi-mat-cua-ban"
+$env:DB_USER = "flashsale"
+$env:DB_PASS = "flashsale"
 ```
 
 ### 4. Chạy test
@@ -161,6 +162,12 @@ Invoke-RestMethod -Method Post "http://localhost:8080/api/orders/<orderId>/pay"
 Invoke-RestMethod "http://localhost:8080/api/orders/<orderId>"
 ```
 
+Chạy toàn bộ kịch bản demo tự động:
+
+```powershell
+.\scripts\demo.ps1
+```
+
 Ngoài ra có thể import `postman/FlashSale.postman_collection.json` vào Postman để chạy các request theo đúng thứ tự demo.
 
 ## API
@@ -193,20 +200,22 @@ flash-sale-demo/
 ├── pom.xml
 ├── docker-compose.yml
 ├── README.md
-├── docs/                          Tài liệu bài làm (PDF, sơ đồ)
+├── .gitignore
+├── scripts/
+│   └── demo.ps1
 ├── postman/
 │   └── FlashSale.postman_collection.json
 └── src/
     ├── main/
     │   ├── java/com/hoangha/flashsale/
     │   │   ├── FlashSaleApplication.java
-    │   │   ├── config/            WebConfig, SchedulingConfig
+    │   │   ├── config/            FlashSaleProperties, WebConfig, SchedulingConfig
     │   │   ├── controller/        FlashSaleController, ChallengeController, OrderController
     │   │   ├── service/           FlashSaleService, ChallengeService, OrderService
     │   │   ├── guard/             BotGuardInterceptor
     │   │   ├── queue/             OrderQueue, InMemoryOrderQueue
     │   │   ├── worker/            OrderWorker, OrderExpiryJob
-    │   │   ├── dto/               BuyResponse, OrderMessage, ApiError
+    │   │   ├── dto/               BuyResponse, OrderMessage, StockResponse, OrderResponse, ApiError
     │   │   └── exception/         GlobalExceptionHandler
     │   └── resources/
     │       ├── application.yml

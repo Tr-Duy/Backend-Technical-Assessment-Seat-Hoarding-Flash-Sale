@@ -1,0 +1,136 @@
+{
+  "info": {
+    "_postman_id": "flash-sale-demo-collection",
+    "name": "FlashSale",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "base_url", "value": "http://localhost:8080" },
+    { "key": "sku", "value": "PHONE-X" },
+    { "key": "token", "value": "" },
+    { "key": "orderId", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "1. Init Stock",
+      "request": {
+        "method": "POST",
+        "url": "{{base_url}}/api/flash-sale/{{sku}}/init?qty=100"
+      }
+    },
+    {
+      "name": "2. Get Challenge Token",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "var resp = pm.response.json();",
+              "pm.collectionVariables.set('token', resp.token);",
+              "pm.collectionVariables.set('tokenIssuedAt', Date.now());"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [{ "key": "X-User-Id", "value": "1" }],
+        "url": "{{base_url}}/api/flash-sale/challenge"
+      }
+    },
+    {
+      "name": "3. Buy (wait 300ms)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "exec": [
+              "// Chờ ít nhất 300ms sau khi lấy token để qua kiểm tra min-human-ms",
+              "var issued = pm.collectionVariables.get('tokenIssuedAt');",
+              "var now = Date.now();",
+              "var elapsed = now - issued;",
+              "var wait = Math.max(0, 300 - elapsed);",
+              "setTimeout(function(){}, wait);"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "if (pm.response.code === 202) {",
+              "  var resp = pm.response.json();",
+              "  pm.collectionVariables.set('orderId', resp.orderId);",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "X-User-Id", "value": "1" },
+          { "key": "X-Challenge-Token", "value": "{{token}}" }
+        ],
+        "url": "{{base_url}}/api/flash-sale/{{sku}}/buy"
+      }
+    },
+    {
+      "name": "4. Check Stock",
+      "request": {
+        "method": "GET",
+        "url": "{{base_url}}/api/flash-sale/{{sku}}/stock"
+      }
+    },
+    {
+      "name": "5. Pay Order",
+      "request": {
+        "method": "POST",
+        "url": "{{base_url}}/api/orders/{{orderId}}/pay"
+      }
+    },
+    {
+      "name": "6. Get Order",
+      "request": {
+        "method": "GET",
+        "url": "{{base_url}}/api/orders/{{orderId}}"
+      }
+    },
+    {
+      "name": "7. Buy Too Fast (403)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "exec": [
+              "// Lấy token mới cho user 2",
+              "pm.sendRequest({",
+              "  url: pm.collectionVariables.get('base_url') + '/api/flash-sale/challenge',",
+              "  method: 'GET',",
+              "  header: { 'X-User-Id': '2' }",
+              "}, function(err, res) {",
+              "  pm.collectionVariables.set('token2', res.json().token);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "X-User-Id", "value": "2" },
+          { "key": "X-Challenge-Token", "value": "{{token2}}" }
+        ],
+        "url": "{{base_url}}/api/flash-sale/{{sku}}/buy"
+      }
+    },
+    {
+      "name": "8. Buy No Token (403)",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "X-User-Id", "value": "3" }],
+        "url": "{{base_url}}/api/flash-sale/{{sku}}/buy"
+      }
+    }
+  ]
+}

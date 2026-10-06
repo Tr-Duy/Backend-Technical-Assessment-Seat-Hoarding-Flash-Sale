@@ -1,12 +1,6 @@
-﻿# IntelliJ IDEA
+target/
 .idea/
 *.iml
-
-# Maven
-target/
-
-# Logs
+.vscode/
 *.log
-
-# Environment
 .env
